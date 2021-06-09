@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>PTT Chat</title>
+    <!--    <script type="text/javascript" src="script.js"></script>-->
+
+    <!--    <script type="text/javascript" src="channel.js"></script>-->
+
+    <!-- <script language="JavaScript" type="text/javascript" src="/js/jquery-1.2.6.min.js"></script> -->
+    <script src="https://code.jquery.com/jquery-2.2.4.min.js"
+            integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44=" crossorigin="anonymous"></script>
+    <!-- <script language="JavaScript" type="text/javascript" src="/js/jquery-ui-personalized-1.5.2.packed.js"></script> -->
+    <!-- <script language="JavaScript" type="text/javascript" src="/js/sprinkle.js"></script> -->
+
+</head>
+<body>
+
+<h1>WebSocket PTT</h1>
+
+<button onClick="showForm()" id="connect">Connect</button>
+
+<!--<form onsubmit="sendMessage()" id="form" style="display: none">-->
+<form onsubmit="beginUpload()" id="form" style="display: none">
+
+
+    <input type="text" id="messageText" autocomplete="off"/>
+
+    <!-- Audio and Video Buttons -->
+
+    <button type="button" class="btn btn-danger" id="stop" disabled>Stop</button>
+
+    <button type="button" onclick="recordAudio()" class="btn btn-info">Record Audio</button>
+
+    <button type="button" onclick="recordVideo()" class="btn btn-info">Record Video</button>
+
+    <button type="submit">Send</button>
+
+</form>
+
+<!--Element to Hold Connection ID-->
+<p id="channelId"></p>
+
+<h4>Sender: </h4>
+<div class="p-5">
+    <audio id="audioElem" controls>
+        <source id="audioSource" src=""></source>
+        <!-- Your browser does not support the audio format. -->
+    </audio>
+</div>
+<div class="p-4">
+    <video autoplay height='240' width="320" muted>
+        <source id="videoSource" src=""></source>
+    </video>
+</div>
+
+<h4>Receiver: </h4>
+
+<!--Element to Hold List Of incoming Messages-->
+<ul id='messages'>
+</ul>
+
+
+<!--Misc-->
+<script>
+    function showForm(event) {
+        let button = document.getElementById("connect");
+        let form = document.getElementById("form");
+        button.style.display = "none";
+        form.style.display = "block";
+    }
+
+</script>
+
+<script>
+    // global vars
+    let recordedFile;
+    let createChannelVar;
+
+    const videoFileType = "video/webm"
+    const audioFileType = "audio/webm"
+
+    let shouldStop = false;
+    let stopped = false;
+
+    const videoElement = document.getElementsByTagName("video")[0];
+    const downloadLink = document.getElementById('download');
+    const stopButton = document.getElementById('stop');
+
+    const audioElement = document.getElementById('audioElem');
+    const videoSource = document.getElementById('videoSource');
+    const audioSource = document.getElementById('audioSource');
+
+    // regex to validate UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    // prompt user to supply username or set to timestamp
+    const myUsername = window.prompt("Please Enter Your Username") || new Date().valueOf()
+
+    // prompt user to supply channel name or channel id
+    const channelName = window.prompt('Enter Channel name or Channel ID');
+
+    //wait for page load complete
+    document.onreadystatechange = () => {
+        if (document.readyState === 'complete') {
+            // check if channel name is valid uuid
+            if (uuidRegex.test(channelName)) {
+                //connect to websocket if channel name is valid uuid
+                connectWebsocket(websocketUrl, channelName)
+            }
+        }
+    };
+
+
+    function beginUpload() {
+        event.preventDefault()
+        // check if channel object exists
+        if (!createChannelVar) {
+
+            createChannelVar = createChannel(channelName)
+
+        }
+
+        let shortFile = recordedFile;
+
+        let file = new File([shortFile], `${myUsername}-${shortFile.type}.wav`, {
+            type: shortFile.type
+        });
+
+        let filename = file.name
+
+        let contentType = file.type
+
+        // channel var is a promise
+        createChannelVar.then(
+            function (response) {
+                // connect websocket
+                connectWebsocket(websocketUrl, response.channelId)
+
+                // create signed upload url
+                getUploadUrl(response.channelId, filename, contentType).then(
+                    function (response) {
+                        // extract signed upload url
+                        let uploadLink = response.body.url
+
+                        // upload
+                        uploadFile(file, uploadLink, contentType).then(
+                            function (response) {
+                                // sendMessage(uploadLink)
+                            }
+                        )
+                    }
+                )
+            }
+        )
+
+
+    }
+
+    function startRecord() {
+        $('.btn-info').prop('disabled', true);
+        $('#stop').prop('disabled', false);
+        $('#download').css('display', 'none')
+    }
+
+    function stopRecord() {
+        $('.btn-info').prop('disabled', false);
+        $('#stop').prop('disabled', true);
+        $('#download').css('display', 'block')
+    }
+
+    const audioRecordConstraints = {
+        echoCancellation: true
+    }
+
+    document.getElementById("stop").addEventListener('click', function () {
+        shouldStop = true;
+    });
+
+    const handleRecord = function ({stream, mimeType}) {
+        startRecord()
+        let recordedChunks = [];
+        stopped = false;
+        const mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = function (e) {
+            if (e.data.size > 0) {
+                recordedChunks.push(e.data);
+            }
+
+            if (shouldStop === true && stopped === false) {
+                mediaRecorder.stop();
+                stopped = true;
+            }
+        };
+
+        mediaRecorder.onstop = function () {
+            const blob = new Blob(recordedChunks, {
+                type: mimeType
+            });
+            recordedChunks = []
+            if (mimeType === 'audio/webm') {
+                // set audio source
+                audioSource.src = URL.createObjectURL(blob);
+                audioElement.load();
+                // audioElement.play();
+            } else {
+                // set video source
+                videoSource.src = URL.createObjectURL(blob);
+                videoElement.load();
+                // videoElement.play();
+            }
+            recordedFile = blob;
+            // const filename = window.prompt('Enter file name');
+            // downloadLink.href = URL.createObjectURL(blob);
+            // downloadLink.download = `${filename || 'recording'}.webm`;
+            stopRecord();
+            videoElement.srcObject = null;
+        };
+
+        mediaRecorder.start(200);
+    };
+
+    async function recordAudio() {
+        const mimeType = 'audio/webm';
+        shouldStop = false;
+        const stream = await navigator.mediaDevices.getUserMedia({audio: audioRecordConstraints});
+        handleRecord({stream, mimeType})
+    }
+
+    async function recordVideo() {
+        const mimeType = 'video/webm';
+        shouldStop = false;
+        const constraints = {
+            audio: {
+                "echoCancellation": true
+            },
+            video: {
+                "width": {
+                    "min": 640,
+                    "max": 1024
+                },
+                "height": {
+                    "min": 480,
+                    "max": 768
+                }
+            }
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = stream;
+        handleRecord({stream, mimeType})
+    }
+
+
+</script>
+
+<script>
+    // set default value
+    let ws = null;
+
+    let websocketUrl = "wss://2985vc3ilk.execute-api.us-east-1.amazonaws.com/dev?channelId=";
+
+    // connect wss
+    function connectWebsocket(url, channel_id) {
+        // build connection url
+        let connectionUrl = `${websocketUrl}${channel_id}`
+
+        // check if existing connection
+        if (ws) {
+            return
+        }
+
+        ws = new WebSocket(connectionUrl)
+
+        ws.onopen = event => {
+            document.getElementById('channelId').innerText = `Your channel ID is: ${channel_id} \nYou can share this with your friends to start a group conversation`
+
+        }
+
+        ws.onmessage = event => {
+            console.log("new event!!!")
+            // begin to split URL into components
+            let s3Url = new URL(event.data)
+
+            // extract pathname
+            let pathname = s3Url.pathname
+            // split pathname
+            let pathname_array = pathname.split("/")
+
+            // get second to last string in array
+            let senderFileName = pathname_array[pathname_array.length - 2]
+            // split string 
+            let senderFileNameArray = senderFileName.split("-")
+            // username is in index 0
+            let senderUsername = senderFileNameArray[0]
+            // filetype is in index 1
+            let fileType = senderFileNameArray[1]
+            // filetype has it's ending cut-off. Make whole again
+            fileType = fileType + "/webm"
+
+            // check if i'm the sender
+            if (senderUsername !== myUsername) {
+                // check if filetype is audio
+                if (fileType === audioFileType) {
+                    // create and append audio element
+
+                    let messages = document.getElementById('messages')
+                    let message = document.createElement('li')
+
+                    let receiverAudioElem = document.createElement("audio")
+                    let receiverAudioSource = document.createElement("source")
+
+                    receiverAudioElem.appendChild(receiverAudioSource)
+                    receiverAudioElem.controls = true;
+                    receiverAudioSource.src = event.data
+
+                    // let content = document.createTextNode(event.data)
+                    message.appendChild(receiverAudioElem);
+                    messages.appendChild(message);
+
+                    receiverAudioElem.load();
+                    receiverAudioElem.play();
+
+                }
+                //check if filetype is video
+                else if (fileType === videoFileType) {
+                    // create and append video element
+                    let messages = document.getElementById('messages')
+                    let message = document.createElement('li')
+
+                    let receiverVideoElem = document.createElement("video")
+                    let receiverVideoSource = document.createElement("source")
+
+                    receiverVideoElem.appendChild(receiverVideoSource)
+                    receiverVideoElem.controls = true;
+                    receiverVideoSource.src = event.data
+
+                    // let content = document.createTextNode(event.data)
+                    message.appendChild(receiverVideoElem);
+                    messages.appendChild(message);
+
+                    receiverVideoElem.load();
+                    receiverVideoElem.play();
+                }
+            }
+
+            // audioElement.src = window.uploadLink.createObjectURL(event.data);
+            // audioElement.play();
+        }
+
+        // listen to close
+        ws.onclose = event => {
+            console.log(event)
+        }
+
+    }
+
+
+    let messages = document.getElementById('messages')
+
+    function processMessage(event) {
+        let message = document.createElement('li')
+        let content = document.createTextNode(event.data)
+        message.appendChild(content);
+        messages.appendChild(message);
+    }
+
+
+    function sendMessage(uploadLink) {
+        let input = document.getElementById("messageText")
+
+        let message = document.createElement('li')
+        let content = document.createTextNode(input.value)
+        message.appendChild(content);
+        messages.appendChild(message);
+
+        let payload = {
+            "audioEv": true,
+            "url": uploadLink
+        }
+        console.log(payload)
+        ws.send(JSON.stringify(payload));
+
+        input.value = ''
+
+    }
+
+</script>
+
+<!--External Requests-->
+<script>
+    //To help me have access to the domain
+
+    const corsAnywhere = "https://thingproxy.freeboard.io/fetch/"
+
+    const baseUrl = "https://eh3wlvr1zb.execute-api.us-east-1.amazonaws.com/"
+
+    //contains needed endpoint url for the functions
+    const endpoints = {
+        createChannel: "dev/channel/create",
+        getUploadUrl: "dev/channel/url"
+    }
+
+    //function to create channel
+
+    let createChannel = function (channelName = "Seun PTT Channel") {
+
+        return new Promise((resolve, reject) => {
+
+            // check if channel name is uuid
+            if (uuidRegex.test(channelName)) {
+                // return channel name as channel id, do not create new channel
+                resolve({channelId: channelName})
+            }
+
+            const url = corsAnywhere + baseUrl + endpoints.createChannel;
+
+            let audioTestHeaders = new Headers();
+
+            audioTestHeaders.append("Content-Type", "application/json");
+
+            let raw = JSON.stringify({
+                "channelName": channelName
+            });
+
+            let requestOptions = {
+                method: 'POST',
+                headers: audioTestHeaders,
+                body: raw,
+                redirect: 'follow'
+            };
+
+            fetch(url, requestOptions)
+                .then(response => response.json())
+                .then(result => resolve(result))
+                .catch(error => reject(error));
+
+        })
+
+    }
+
+    //function to create upload url
+    let getUploadUrl = function (channelID = "bf3ca510-c717-11eb-9e17-eb0ced4ee36b", key = "Seun.wav", contentType = "audio/webm", expires = 3600) {
+
+        return new Promise((resolve, reject) => {
+
+
+            let getUploadHeaders = new Headers();
+
+            getUploadHeaders.append("Content-Type", "application/json");
+
+            const url = corsAnywhere + baseUrl + endpoints.getUploadUrl;
+
+            let raw = JSON.stringify({
+                "channelId": channelID,
+                "expires": expires,
+                "key": key,
+                "contentType": contentType
+            });
+
+            let requestOptions = {
+                method: 'POST',
+                headers: getUploadHeaders,
+                body: raw,
+                redirect: 'follow'
+            };
+
+            fetch(url, requestOptions)
+                .then(result => result.json())
+                .then(result => resolve(result))
+                .catch(error => reject(error));
+        })
+    }
+
+    //function to upload files
+    let uploadFile = function (file, url, contentType) {
+
+        return new Promise((resolve, reject) => {
+
+            let fileUploadHeaders = new Headers();
+
+            fileUploadHeaders.append("Content-Type", contentType);
+
+
+            let requestOptions = {
+                method: 'PUT',
+                headers: fileUploadHeaders,
+                body: file,
+                redirect: 'follow'
+            };
+
+            fetch(url, requestOptions)
+                .then(response => response.text())
+                .then(result => resolve(result))
+                .catch(error => reject(error));
+
+        })
+    }
+
+</script>
+
+
+</body>
+</html>
